@@ -1,4 +1,15 @@
+import difflib
 from typing import Dict, List
+
+
+def _change_ratio(original: str, fixed: str) -> float:
+    """Fraction of the file that changed: 0.0 (identical) .. 1.0 (total rewrite)."""
+    original_lines = original.splitlines()
+    fixed_lines = fixed.splitlines()
+    if not original_lines:
+        return 1.0 if fixed_lines else 0.0
+    ratio = difflib.SequenceMatcher(a=original_lines, b=fixed_lines).ratio()
+    return 1.0 - ratio
 
 
 def assess_risk(
@@ -28,7 +39,6 @@ def assess_risk(
         }
 
     original_lines = original_code.strip().splitlines()
-    fixed_lines = fixed_code.strip().splitlines()
 
     # ----------------------------
     # Issue severity based risk
@@ -49,9 +59,27 @@ def assess_risk(
     # ----------------------------
     # Structural change checks
     # ----------------------------
-    if len(fixed_lines) < len(original_lines) * 0.5:
-        score -= 20
-        reasons.append("Fixed code is much shorter than original.")
+    # ----------------------------
+    # Blast-radius guardrail
+    # ----------------------------
+    # A fix should touch only as much of the file as the issues justify.
+    # Few/minor issues => small allowed change; many => more leeway (capped).
+    # Very short snippets have noisy diff ratios, so they never auto-apply.
+    churn = _change_ratio(original_code, fixed_code)
+    max_churn = min(0.6, 0.15 + 0.15 * len(issues))
+    too_small_to_trust = len(original_lines) < 8
+    blast_radius_ok = churn <= max_churn and not too_small_to_trust
+
+    if churn > max_churn:
+        score -= 30
+        reasons.append(
+            f"Fix rewrote {churn:.0%} of the file (budget {max_churn:.0%}); "
+            "too large to auto-apply."
+        )
+    if too_small_to_trust:
+        reasons.append(
+            "Snippet is too short to assess change size reliably; recommend manual review."
+        )
 
     if "return" in original_code and "return" not in fixed_code:
         score -= 30
@@ -82,9 +110,15 @@ def assess_risk(
     # ----------------------------
     # [part 3] Tightened the auto-fix gate: require score >= 90 (not just level
     # "low", i.e. >= 75), so borderline low-risk fixes are routed to manual review.
-    should_autofix = level == "low" and score >= 90
+    # A fix must clear the score threshold AND stay within its blast-radius
+    # budget. The blast-radius check can veto auto-apply even on a high score.
+    should_autofix = level == "low" and score >= 90 and blast_radius_ok
 
-    if level == "low" and not should_autofix:
+    if level == "low" and score >= 90 and not blast_radius_ok:
+        reasons.append(
+            "Auto-apply vetoed by blast-radius guardrail; recommend manual review."
+        )
+    elif level == "low" and not should_autofix:
         reasons.append(
             "Score is below the auto-fix threshold (90); recommend manual review."
         )
