@@ -188,14 +188,19 @@ class BugHoundAgent:
         return None
 
     def _normalize_issues(self, arr: List[Any]) -> List[Dict[str, str]]:
+        # [Part 2] Reliability: set unknown severities to High so bad LLM
+        # output can't be scored as 0 impact and slip past the risk check.
         issues: List[Dict[str, str]] = []
         for item in arr:
             if not isinstance(item, dict):
                 continue
+            severity = str(item.get("severity", "")).strip().title()
+            if severity not in {"Low", "Medium", "High"}:
+                severity = "High"  # unknown -> treat as most serious (fail safe)
             issues.append(
                 {
                     "type": str(item.get("type", "Issue")),
-                    "severity": str(item.get("severity", "Unknown")),
+                    "severity": severity,
                     "msg": str(item.get("msg", "")).strip(),
                 }
             )
