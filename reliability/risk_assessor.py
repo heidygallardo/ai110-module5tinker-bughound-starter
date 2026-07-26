@@ -80,7 +80,14 @@ def assess_risk(
     # ----------------------------
     # Auto-fix policy
     # ----------------------------
-    should_autofix = level == "low"
+    # [part 3] Tightened the auto-fix gate: require score >= 90 (not just level
+    # "low", i.e. >= 75), so borderline low-risk fixes are routed to manual review.
+    should_autofix = level == "low" and score >= 90
+
+    if level == "low" and not should_autofix:
+        reasons.append(
+            "Score is below the auto-fix threshold (90); recommend manual review."
+        )
 
     if not reasons:
         reasons.append("No significant risks detected.")
