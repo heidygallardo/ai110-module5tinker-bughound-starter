@@ -2,6 +2,65 @@ from bughound_agent import BugHoundAgent
 from llm_client import MockClient
 
 
+class BlastRadiusMockClient:
+    """
+    Offline MockClient-style stub (same `complete(system_prompt, user_prompt)`
+    shape as llm_client.MockClient) used to exercise the blast-radius guardrail.
+
+    - For the analyzer prompt it returns valid JSON with a single Low-severity
+      issue, so the score stays high before any structural penalties.
+    - For the fixer prompt it returns a large rewrite of the file, which the
+      blast-radius guardrail should flag as too big to auto-apply.
+    """
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        if "Return ONLY valid JSON" in system_prompt:
+            return '[{"type": "Code Quality", "severity": "Low", "msg": "print used"}]'
+        # A sweeping rewrite (still keeps a return), far larger than one Low issue
+        # justifies -> should trip the blast-radius budget.
+        return (
+            "import logging\n"
+            "\n"
+            "logger = logging.getLogger(__name__)\n"
+            "\n"
+            "def process(items):\n"
+            "    doubled = [x * 2 for x in items]\n"
+            "    grand_total = sum(doubled)\n"
+            "    logger.info(\"total=%s\", grand_total)\n"
+            "    return grand_total\n"
+        )
+
+
+def test_blast_radius_guardrail_blocks_autofix_on_large_rewrite():
+    # A modestly sized snippet with only a Low-severity issue...
+    code = (
+        "def process(items):\n"
+        "    results = []\n"
+        "    for item in items:\n"
+        "        value = item * 2\n"
+        "        results.append(value)\n"
+        "    total = sum(results)\n"
+        "    print(total)\n"
+        "    return total\n"
+    )
+
+    agent = BugHoundAgent(client=BlastRadiusMockClient())
+    result = agent.run(code)
+
+    risk = result["risk"]
+    # The decision under test: the guardrail must refuse to auto-apply.
+    assert risk["should_autofix"] is False
+    # And it should be *because* the rewrite was too large (blast-radius reason).
+    assert any(
+        "rewrote" in reason or "blast-radius" in reason for reason in risk["reasons"]
+    )
+    # The agent should route to human review rather than auto-applying.
+    assert any(
+        entry["step"] == "REFLECT" and "not safe" in entry["message"].lower()
+        for entry in result["logs"]
+    )
+
+
 def test_workflow_runs_in_offline_mode_and_returns_shape():
     agent = BugHoundAgent(client=None)  # heuristic-only
     code = "def f():\n    print('hi')\n    return True\n"

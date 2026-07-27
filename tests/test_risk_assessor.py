@@ -36,6 +36,37 @@ def test_high_severity_issue_drives_score_down():
     assert risk["level"] in ("medium", "high")
 
 
+def test_blast_radius_vetoes_autofix_on_short_snippet():
+    # A small in-budget change (one line, single Low issue -> 30% churn budget)
+    # keeps the score high, but the snippet is under the 8-line floor, so the
+    # blast-radius guardrail must still veto auto-apply.
+    original = (
+        "def f(x):\n"
+        "    y = x + 1\n"
+        "    z = y * 2\n"
+        "    result = z - 1\n"
+        "    print(result)\n"
+        "    return result\n"
+    )
+    fixed = (
+        "def f(x):\n"
+        "    y = x + 1\n"
+        "    z = y * 2\n"
+        "    result = z - 1\n"
+        "    print(result)  # tidy\n"
+        "    return result\n"
+    )
+    risk = assess_risk(
+        original_code=original,
+        fixed_code=fixed,
+        issues=[{"type": "Code Quality", "severity": "Low", "msg": "print"}],
+    )
+
+    assert risk["score"] >= 90  # clears the auto-fix score gate...
+    assert risk["should_autofix"] is False  # ...but the guardrail still vetoes
+    assert any("blast-radius" in reason for reason in risk["reasons"])
+
+
 def test_missing_return_is_penalized():
     original = "def f(x):\n    return x + 1\n"
     fixed = "def f(x):\n    x + 1\n"
